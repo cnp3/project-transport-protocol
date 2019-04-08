@@ -1,0 +1,380 @@
+
+\documentclass[a4paper,12pt]{article}
+\usepackage[margin=2cm]{geometry} %
+\usepackage[french]{babel} %
+\usepackage[T1]{fontenc} %
+\usepackage[utf8]{inputenc} %
+\usepackage{fancyhdr} %
+\usepackage{hyperref} %
+\usepackage{paralist} %
+\usepackage{url}
+
+\usepackage{pifont,mdframed}
+
+\newenvironment{warning}
+{\par\begin{mdframed}[linewidth=2pt,linecolor=red]%
+		\begin{list}{}{\leftmargin=1cm
+				\labelwidth=\leftmargin}\item[\Large\ding{43}]}
+		{\end{list}\end{mdframed}\par}
+
+
+\def\mytitle{TRTP: Truncated Reliable Transport Protocol}\title{\mytitle}
+\def\mydate{Sept. 2018}\date{\mydate}
+\def\myauthor{LINGI1341}\author{\myauthor}
+
+\lfoot{} %
+\cfoot{} %
+\rfoot{\thepage} %
+\lhead{%
+    \large
+    \href{https://moodleucl.uclouvain.be/course/view.php?id=7995
+         }{Projet 1\space\myauthor\space-- Réseaux informatiques}
+}
+\chead{} %
+\rhead{%
+    \large\mydate%
+}
+
+\newcommand{\must}{\textbf{DOIT}}
+\newcommand{\should}{\textbf{DEVRAIT}}
+
+\newcommand{\pdata}{\texttt{PTYPE\_DATA}}
+\newcommand{\pack}{\texttt{PTYPE\_ACK}}
+\newcommand{\pnack}{\texttt{PTYPE\_NACK}}
+
+\newcommand{\sender}{\texttt{sender}}
+\newcommand{\receiver}{\texttt{receiver}}
+
+\begin{document}
+\rmfamily %
+\pagestyle{fancy} %
+
+\begin{center}
+    \huge\bfseries\mytitle%
+    \vspace{5ex}
+\end{center} %
+
+\section{Description du projet}
+Une célèbre entreprise de céréales, Crousti-Croc, a récemment installé un nouveau data-center dans la région.
+Celui-ci permettra à la compagnie de prévoir le rendement de ses cultures grâce à des simulations.
+Les calculs sont complexes, et ceux-ci requièrent de la coordination entre les différentes machines.
+La communication entre les serveurs requiert donc un protocole de transport.
+
+L'entreprise veut maximiser le temps CPU utilisé pour les simulations.
+Pour se faire, elle a conçu Truncated Reliable Transport Protocol (TRTP), un protocole de transport \textbf{fiable} basé sur des segments \textbf{UDP}.
+Elle désire une implémentation performante dans le langage \textbf{C} qui ne contient \textbf{aucune fuite de mémoire}\footnote{Celles-ci peuvent faire crasher des machines de calculs, impliquant un coût de maintenance et de retard de simulation conséquent.}.
+TRTP permettra de réaliser des transferts fiables de fichiers, utilisera la
+stratégie du \textbf{selective repeat}\footnote{Le selective repeat implique
+uniquement que le \receiver\ accepte les paquets hors-séquence et les stocke
+dans un buffer s'ils sont dans la fenêtre de réception. Par contre, ce
+protocole-ci ne permet pas au \receiver\ d'indiquer au \sender\ quels sont les
+paquets hors-séquence qu'il a reçu.} et permettra la \textbf{troncation de payload}\footnote{Tronquer les payloads peut permettre au réseau de décongestionner ses buffers tout en fournissant un mécanisme de feedback rapide. Cette idée est plus détaillée dans un article récent~\cite{handley2017re}.}.
+Comme l'architecture du réseau de l'entreprise est \textbf{uniquement basée sur IPv6}, TRTP devra fonctionner au dessus de ce protocole.
+
+Ce projet est à faire par \textbf{groupe de deux}.
+Deux programmes sont à réaliser, permettant de faire un transfert de données entre
+deux machines distantes.
+
+\section{Spécifications}
+\subsection{Protocole}
+Le format des segments du protocole est visible sur la figure~\ref{fig:format}. Ils 
+se composent des champs dans l'ordre suivant:
+\begin{description}
+    \item[Type] Ce champ est encodé sur 2 bits. Il indique le type du paquet,
+        trois types sont possibles:
+        \begin{enumerate}[(i)]
+            \item \pdata\ = 1, indique un paquet contenant des données;
+            \item \pack\ = 2, indique un paquet d'acquittement de données
+                reçues.
+            \item \pnack\ = 3, indique un paquet de non acquittement d'un packet de données tronquées (càd, avec le champ TR à 1).
+        \end{enumerate}
+        Un paquet avec un autre type \must\ être ignoré;
+    \item[TR] Ce champ est encodé sur 1 bit, et indique si le réseau a tronqué un payload initialement existant dans un packet \pdata\ .  
+	    La réception d'un paquet avec ce champ à 1 provoque l'envoi d'un paquet \pnack\ .
+	    Un paquet d'un type autre que \pdata\ avec ce champ différent de 0 \must\ être ignoré;
+    \item[Window] Ce champ est encodé sur 5 bits, et varie donc dans l'intervalle [0, 31].
+        Il indique la taille de la fenêtre de réception de l'émetteur de ce paquet.
+        Cette valeur indique le nombre de places vides dans le buffer de réception de
+        l'émetteur du segment, et peut varier au cours du temps.
+        Si un émetteur n'a pas de buffer de réception, cette valeur \must\ être mise à 0.
+        Un émetteur ne peut envoyer de nouvelles données avant d'avoir reçu un acquit pour le
+        paquet précédant que si le champs Window du dernier paquet provenant
+        du destinataire était non nul. Lors de la création d'un nouvelle connexion,
+        l'émetteur initiant la connexion \must\ considérer que le destinataire avait annoncé une
+        valeur initiale de Window valant 1.
+    \item[Seqnum] Ce champ est encodé sur 8 bits, et sa valeur varie dans l'intervalle [0, 255].
+        Sa signification dépend du type du paquet.
+        \begin{description}
+            \item[\pdata] Il correspond au numéro de séquence de ce paquet de données.
+                Le premier segment d'une connexion a le numéro de séquence 0. Si le numéro
+                de séquence ne rentre pas dans la fenêtre des numéros de séquence autorisés
+                par le destinataire, celui-ci \must\ ignorer le paquet;
+            \item[\pack] Il correspond au numéro de séquence du prochain numéro de séquence
+                attendu (c-à-d (le dernier numéro de séquence + 1) $\% 2^8$).
+                Il est donc possible d'envoyer un seul paquet \pack\ qui sert d'acquittement
+                pour plusieurs paquets \pdata\ (principe des acquis
+                cumulatifs);
+            \item[\pnack] Il correspond au numéro de séquence du paquet tronqué qui a été reçu. Si il ne rentre pas dans la fenêtre des numéros de séquence envoyés par l'émetteur, celui-ci \must\ ignorer le paquet.
+        \end{description}
+        Lorsque l'émetteur atteint le numéro de séquence 255, il recommence à 0;
+    \item[Length] Ce champ est encodé sur 16 bits en network-byte order, et sa
+        valeur varie dans l'intervalle [0, 512].
+        Il dénote le nombre d'octets de données dans le payload.
+        Un paquet \pdata\ avec ce champ à 0 et dont le numéro de séquence correspond
+        au dernier numéro d'acquittement envoyé par le destinataire signifie que le transfert est
+        fini. Une éventuelle troncation du paquet ne change pas la valeur de ce champ. Si ce champ 
+        vaut plus que 512, le paquet \must\ être ignoré;
+    \item[Timestamp] Ce champs est encodé sur 4 octets, et représente une
+        valeur opaque donc sans endianness particulière. Pour chaque paquet
+        \pdata\, l'émetteur d'un paquet choisit une valeur à mettre dans ce
+        champs. Lorsque le destinataire envoie un paquet \pack\, il indique
+        dans ce champs la valeur du champs Timestamp du \textbf{dernier} paquet
+        \pdata\ reçu. La signification de la valeur est laissée libre aux
+        implémenteurs;
+    \item[CRC1] Ce champs est encodé sur 4 octets, en network byte-order.
+    Ce champ contient le résultat de l'application de la fonction
+    CRC32\footnote{Le diviseur (polynomial) de cette fonction est
+    	$x^{32} + x^{26} + x^{23} + x^{22} + x^{16} + x^{12} + x^{11} + x^{10} + x^8 + x^7 + x^5 + x^4 + x^2 + x + 1$, la représentation
+    	normale de ce polynôme (en network byte-order) est $0\times04C11DB7$. L'implémentation
+    	la plus courante de cette fonction se trouve dans \texttt{zlib.h}, mais de nombreuses
+    	autres existent.}
+    au header avec le champ TR mis à 0\footnote{En règle générale, un routeur commencera à tronquer les paquets lorsque ses charges réseau et/ou CPU deviendront importantes. On voudrait donc éviter que ce dernier ait à recalculer le CRC (et donc perdre du temps CPU) si le champ TR change de valeur.}, juste avant qu'il ne soit envoyé sur le réseau.
+    À la réception d'un paquet, cette fonction doit être recalculée sur le header avec le champ TR mis à 0, et 
+    le paquet \must\ être ignoré si les deux valeurs diffèrent.
+    \item[Payload] Ce champ contient au maximum 512 octets.
+        Il contient les données transportées par le protocole. Si le champ TR est 0, sa taille est
+        donnée par le champs Length; sinon, sa taille est nulle. 
+    \item[CRC2] Ce champs est encodé sur 4 octets, en network byte-order.
+        Ce champ contient le résultat de l'application de la fonction
+        CRC32 à l'éventuel payload, juste avant qu'il ne soit envoyé sur le réseau.
+        Ce champ n'est présent que si le paquet contient un payload et qu'il n'a pas été tronqué (champ TR à 0).
+        À la réception d'un paquet avec ce champ, cette fonction doit être recalculée sur le payload, et 
+        le paquet \must\ être ignoré si les deux valeurs diffèrent.
+\end{description}
+\begin{figure}
+    \centering
+    \begin{minipage}{50ex}
+\begin{verbatim}
+ 01 2 3 7 8     15 16     23 24    31
++--+-+---+--------+---------+--------+
+|Ty|T|Win|  Seq   |      Length      |
+|pe|R|dow|  num   |                  |
++--+-+---+--------+---------+--------+
+|        Timestamp (4 octets)        |
+|                                    |
++------------------------------------+
+|           CRC1 (4 octets)          |
+|                                    |
++------------------------------------+
+|                                    |
+|                                    |
++                                    +
+.       Payload (max 512 octets)     .
+.                                    .
+.                                    .
++------------------------------------+
+|     CRC2 (4 octets, optionnel)     |
+|                                    |
++------------------------------------+
+\end{verbatim}
+    \end{minipage}
+    \caption{Format des paquets du protocole}\label{fig:format}
+\end{figure}
+
+\medskip
+Les communications peuvent relier deux machines qui se trouvent soit au sein d'un même data-center, soit dans différents bâtiments répartis à travers le monde.
+L'entreprise veut donc que TRTP fonctionne correctement dans le modèle de réseau suivant:
+\begin{enumerate}
+    \item Un segment de données envoyé par un hôte est reçu \textbf{au plus une fois}
+        (pertes mais pas de duplication);
+    \item Le réseau peut \textbf{corrompre} les segments de données de façon aléatoire;
+    \item Le réseau peut \textbf{tronquer} le payload des paquets de façon aléatoire;
+    \item Soit deux paquets, $P_1$ et $P_2$, si $P_1$ est envoyé avant $P_2$, il n'y
+        a \textbf{pas de garantie} concernant l'\textbf{ordre} dans lequel ces paquets seront reçus
+        à la destination;
+    \item La \textbf{latence} du réseau pour acheminer un paquet varie dans
+    l'intervalle \textbf{[0,2000]} (ms).
+\end{enumerate}
+
+\subsection{Programmes}
+L'implémentation du protocole devra permettre de réaliser un transfert de données
+unidirectionnel au moyen de deux programmes, \sender\ et \receiver.
+Ces deux programmes devront être produit au moyen de la cible par défaut d'un Makefile.
+Cette implémentation \must\ fonctionner sur les ordinateurs \textbf{Linux} de la salle Intel, bâtiment Réaumur\footnote{Les machines peuvent être accédées via SSH; consultez \url{https://wiki.student.info.ucl.ac.be/Mat\%c3\%a9riel/SalleIntel}}.
+
+Les deux programmes nécessitent au minimum deux arguments pour se lancer:\\
+\sender\ \texttt{hostname port}, avec \texttt{hostname} étant le nom de domaine ou l'adresse
+IPv6 du \receiver, et \texttt{port} le numéro de port UDP sur lequel le
+\receiver\ a été lancé.\\
+\receiver\ \texttt{hostname port}, avec \texttt{hostname} le nom de domaine où l'adresse
+IPv6 sur laquelle le \receiver\ doit accepter une connexion (\texttt{::} pour écouter sur toutes les
+interfaces), et \texttt{port} le port UDP sur lequel le \receiver\ écoute.\\
+
+Enfin, ces deux programmes supporteront l'argument optionnel suivant:\\
+\texttt{-f X}, afin de spécifier un fichier X, \textbf{potentiellement binaire}, à envoyer par le \sender\
+ou le fichier dans lequel sauver les données reçues par le \receiver.
+Si cet argument n'est pas spécifié, le \sender\ envoie ce qu'il lit sur l'entrée
+standard (CRTL-D pour signaler EOF), et le \receiver\ affiche ce qu'il reçoit sur
+sa sortie standard.
+
+Les deux programmes doivent utiliser la \textbf{sortie d'erreur standard} s'ils veulent afficher
+des informations à l'utilisateur.
+
+\medskip
+Voici quelques exemples pour lancer les programmes:\\
+\begin{tabular}{lp{.5\textwidth}l}
+    \sender\ \texttt{::1 12345 <{} fichier.dat} & Redirige le contenu du fichier fichier.dat
+                                       sur l'entrée standard, et l'envoie sur le
+                                       \receiver\ présent sur la même machine
+                                       (\texttt{::1}),
+                                       qui écoute sur le port 12345 \\
+    \sender\ \texttt{-f fichier.dat ::1 12345} & Idem, mais sans passer par l'entrée standard\\
+    \sender\ \texttt{-f fichier.dat localhost 12345} &
+    Idem, en utilisant un nom de domaine (localhost est défini dans
+    /etc/hosts)\\
+    \receiver\ \texttt{:: 12345 > fichier.dat 2> log.log} & Lance un receiver qui écoute sur toutes
+                                       les interfaces, et affiche le contenu du transfert sur
+                                       la sortie standard, qui est redirigée dans fichier.dat, alors
+                                       que les messages d'erreur et de log sont redirigés dans
+                                       log.log\\
+\end{tabular}
+
+\section{Tests}
+\subsection{INGInious}
+Des tests INGInious seront fournis pour vous aider à tester deux facettes du
+projet:
+\begin{enumerate}
+    \item La création, l'encodage et le décodage de segments;
+    \item L'envoi et la réception de donnée sur le réseaux, multiplexés sur un
+        socket.
+\end{enumerate}
+
+\subsection{Tests individuels}
+Les tests INGInious ne seront pas suffisant pour tester votre implémentation. Il vous est donc
+demandé de tester par vous-même votre code, afin de réaliser une suite de test, et de le documenter
+dans votre rapport.
+
+\subsection{Tests d'interopérabilité}
+Vos programmes doivent être inter-opérables avec les implémentations d'autres groupes.
+Vous ne pouvez donc pas créer de nouveau type de segments, ou rajouter des méta-données
+dans le payload. 
+Deux possibilités de tester l'interopérabilité de votre implémentation s'offrent à vous.
+\begin{enumerate}
+	\item Durant une partie de la semaine précédent la première soumission, vous aurez la possibilité de tester votre \sender\ avec le \receiver\ de référence.
+	\item Une semaine avant la remise de la deuxième soumission, vous \textbf{devrez} tester votre implémentation
+	avec 2 autres groupes (votre \sender\ et leur \receiver, votre \receiver\ et leur \sender).
+\end{enumerate}
+
+\section{Planning et livrables}
+
+\medskip
+\textbf{Première soumission, 22/10 à 8h} %
+
+\begin{enumerate}
+    \item Rapport (max 4 pages, en PDF), décrivant l'architecture générale de votre
+        programme, et répondant \textbf{au minimum} aux questions suivantes:\footnote{Le rapport sera lu par des experts mandatés par l'entreprise qui connaissent le sujet. Soyez donc \textbf{objectifs} et évitez de réintroduire le contexte du projet dans votre rapport. Toutefois, libre à vous mettre en avant une partie du projet non listée dans la liste ci-dessous que vous trouvez pertinente.}
+        \begin{itemize}
+            \item Que mettez-vous dans le champs Timestamp, et quelle
+                utilisation en faites-vous?
+            \item Comment réagissez-vous à la réception de paquets \pnack\ ?
+            \item Comment avez-vous choisi la valeur du retransmission timeout?
+            \item Quelle est la partie critique de votre implémentation, affectant
+                la vitesse de transfert?
+            \item Quelles sont les performances de votre protocole? (\textbf{évaluation} graphique et/ou chiffrée, scénarios explorés, explication de la méthodologie)
+            \item Quelle(s) stratégie(s) de tests avez-vous utilisée(s)?
+        \end{itemize}
+    \item Implémentation des deux programmes permettant un transfert de données en
+        utilisant le protocole.	
+    \item Suite de tests des programmes.
+    \item Makefile dont la \textbf{cible par défaut} produit les deux programmes
+        dans le répertoire courant avec comme noms \sender\ et \receiver, et
+        dont la cible \textbf{tests} lance votre suite de tests.
+\end{enumerate}
+
+\medskip
+\textbf{Tests d'inter-opérabilité, durant les séances de TP de la semaine du 22/10 au 26/10, salle Intel (planning à confirmer)}
+\medskip
+
+\medskip
+\textbf{Deuxième soumission, 2/11/2016}
+
+Même critères que pour la première condition, le rapport devant décrire en plus
+le résultat des tests d'interopérabilité en annexe, ainsi que les changements
+effectués au code si applicable.
+
+\medskip
+\textbf{Format des livrables}
+
+La soumission fera en une seule archive \textbf{ZIP}, respectant le format
+suivant:
+\begin{center}
+\begin{tabular}{lp{.5\textwidth}l}
+    \texttt{/} & Racine de l'archive \\
+    \hskip 2ex\texttt{Makefile} & Le Makefile demandé \\
+    \hskip 2ex\texttt{src/} & Le répertoire contenant le code source des deux programmes \\
+    \hskip 2ex\texttt{tests/} & Le répertoire contenant la suite de tests \\
+    \hskip 2ex\texttt{rapport.pdf} & Le rapport \\
+    \hskip 2ex\texttt{gitlog.stat} & La sortie de la commande \texttt{git log -{}-stat} \\
+\end{tabular}
+\end{center}
+Cette archive sera nommée \texttt{projet1\_nom1\_nom2.zip}, où \texttt{nom1/2} sont les
+noms de famille des membres du groupe, et sera à mettre sur deux tâches dédiées sur Inginious (une pour chaque soumission) qui vérifieront le format de votre archive.
+Si celle-ci ne passe pas les tests de format, \textbf{votre soumission ne sera pas considérée pour l'évaluation!}
+Les liens de ces tâches vous seront communiqués en temps utile.
+
+Il est demandé de réaliser le projet sous un gestionnaire de version (typiquement \texttt{git}).
+
+\begin{warning}
+	\textbf{Important:} l'évaluation tiendra compte de vos deux soumissions, et pénalisera les projets qui ont deux soumissions trop différentes.
+	La première soumission n'est donc \textbf{PAS} facultative.
+\end{warning}
+
+\section{Evaluation}
+
+La note du projet sera composée des trois parties suivantes:
+\begin{enumerate}
+    \item Implémentation: Vos programmes fonctionnent-ils correctement? Qualité de la suite de
+        tests? Que se passe t-il quand le
+        réseau est non-idéal? Sont-ils inter-opérables? \ldots
+
+        Le respect des spécifications (arguments, fonctionnement du protocole,
+        formats des segments, structure de l'archive, \ldots) est impératif
+        à la réussite de cette partie!
+    \item Rapport;
+    \item Code review individuelle du codes de deux autres groupes. Effectuée durant
+        la semaine suivant la remise du projet. Vous serez noté sur la pertinence
+        de vos reviews. Plus d'informations suivront en temps voulu.
+\end{enumerate}
+
+\section{Ressources utiles}
+Les manpages des fonctions suivantes sont un bon point de départ pour
+implémenter le protocole, ainsi que pour trouver d'autres fonctions utiles:
+\texttt{socket, bind, getaddrinfo, connect, send, sendto, sendmsg, recv,
+    recvfrom, recvmsg, select, poll, getsockopt, shutdown, read, write, fcntl,
+getnameinfo, htonl, ntohl, getopt}
+
+\medskip
+
+\cite{beej}~est un tutoriel disponible en ligne, présentant la plupart des appels
+systèmes utilisées lorsque l'on programme en C des applications interagissant
+avec le réseau.
+\textbf{C'est probablement la ressource qui vous sera le plus utile pour commencer votre projet.}
+
+\cite{stevens}~et~\cite{linux}~sont deux livres de références sur la
+programmation système dans un environnement UNIX, disponibles en bibliothèque
+INGI.\@
+
+\cite{socket}~est le livre de référence sur les sockets TCP/IP en C,
+disponible en bibliothèque INGI.\@
+
+\cite{howtosend}~et~\cite{howtoreceive}~sont deux mini-tutoriels pour la création d'un serveur et
+d'un client utilisant des sockets UDP.\@
+
+\cite{select}~et \texttt{man select\_tut} donnent une introduction à l'appel système
+\texttt{select}, utile pour lire et écrire des données de façon non-bloquante.
+
+\bibliographystyle{plainurl}
+\bibliography{biblio.bib}
+
+
+\end{document}

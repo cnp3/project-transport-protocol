@@ -1,0 +1,3 @@
+[submodule "linksim"]
+	path = linksim
+	url = https://github.com/oliviertilmans/LINGI1341-linksim

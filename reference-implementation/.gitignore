@@ -1,0 +1,16 @@
+*.d
+*.o
+sender
+!src/sender
+receiver
+!src/receiver
+out
+a.out
+.clang
+.gdb_history
+tags
+*.swp
+*.log
+input_file
+output_file
+CUnitAuto*.xml
